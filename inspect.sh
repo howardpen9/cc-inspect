@@ -249,8 +249,9 @@ cat > "$OUT" << 'HTMLHEAD'
   .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; }
   .badge {
     background: var(--badge); border-radius: 6px; padding: 6px 14px;
-    font-size: 13px; font-weight: 500;
+    font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.15s;
   }
+  .badge:hover { opacity: 0.75; }
   .badge strong { color: var(--accent); }
 
   /* --- Sections --- */
@@ -394,6 +395,22 @@ document.addEventListener('click', function(e) {
   if (header) {
     header.classList.toggle('open');
     header.nextElementSibling.classList.toggle('open');
+    return;
+  }
+  // Badge scroll to section
+  var badge = e.target.closest('.badge[data-badge]');
+  if (badge) {
+    var cat = badge.dataset.badge;
+    var section = document.querySelector('section[data-category="' + cat + '"]');
+    if (section) {
+      var header = section.querySelector('.section-header');
+      var body = section.querySelector('.section-body');
+      if (header && body && !header.classList.contains('open')) {
+        header.classList.add('open');
+        body.classList.add('open');
+      }
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     return;
   }
   // Scope filter chips
