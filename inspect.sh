@@ -163,36 +163,40 @@ def resolve_cwd(project_dir):
             continue
     return None, True
 
-def collect_md_files(memory_dir):
-    out = []
+def scan_memory_dir(memory_dir):
+    """Single-pass scan: returns (md_files, total_size_bytes).
+
+    md_files is a list of (path, mtime, size, md5) for .md files at the top level.
+    total_size sums ALL files (md + non-md + any subdir content).
+    """
+    md_files = []
+    total = 0
     try:
         for name in os.listdir(memory_dir):
-            if not name.endswith('.md'): continue
             p = os.path.join(memory_dir, name)
             try:
                 st = os.stat(p)
             except OSError:
                 continue
-            if not os.path.isfile(p): continue
-            try:
-                with open(p, 'rb') as f:
-                    md5 = hashlib.md5(f.read()).hexdigest()
-            except OSError:
-                md5 = ''
-            out.append((p, st.st_mtime, st.st_size, md5))
+            if os.path.isfile(p):
+                total += st.st_size
+                if name.endswith('.md'):
+                    try:
+                        with open(p, 'rb') as f:
+                            md5 = hashlib.md5(f.read()).hexdigest()
+                    except OSError:
+                        md5 = ''
+                    md_files.append((p, st.st_mtime, st.st_size, md5))
+            elif os.path.isdir(p):
+                for root, _, files in os.walk(p):
+                    for fn in files:
+                        try:
+                            total += os.path.getsize(os.path.join(root, fn))
+                        except OSError:
+                            pass
     except OSError:
         pass
-    return out
-
-def dir_size(path):
-    total = 0
-    for root, _, files in os.walk(path):
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
-    return total
+    return md_files, total
 
 def pretty_path(p):
     if not p: return ''
@@ -215,14 +219,13 @@ if os.path.isdir(projects_root):
         mdir = os.path.join(pdir, 'memory')
         if not os.path.isdir(mdir): continue
         cwd, has_jsonl = resolve_cwd(pdir)
-        mds = collect_md_files(mdir)
+        mds, size = scan_memory_dir(mdir)
         try:
             contents = os.listdir(mdir)
         except OSError:
             contents = []
         if not mds and not contents:
             continue
-        size = dir_size(mdir)
         latest = max((m[1] for m in mds), default=0)
         if cwd and os.path.isdir(cwd):
             label = os.path.basename(cwd.rstrip('/')) or cwd
@@ -276,8 +279,7 @@ if os.path.isdir(agent_root):
     for name in sorted(os.listdir(agent_root)):
         sub = os.path.join(agent_root, name)
         if not os.path.isdir(sub): continue
-        mds = collect_md_files(sub)
-        size = dir_size(sub)
+        mds, size = scan_memory_dir(sub)
         latest = max((m[1] for m in mds), default=0)
         entries.append({
             'scope': 'agent-memory',
@@ -476,7 +478,6 @@ if dup_clusters:
         files = c['files']  # list of (entry_idx_in_all, (path, mtime, size, md5))
         # Find newest mtime -> keep; others -> rm
         files_sorted = sorted(files, key=lambda f: f[1][1], reverse=True)
-        newest = files_sorted[0]
         to_remove = files_sorted[1:]
         rm_cmd = '\n'.join(f'rm {shell_quote(f[1][0])}' for f in to_remove)
 
@@ -554,22 +555,6 @@ print(''.join(out_parts))
 PYEOF
 }
 
-count_memory() {
-  # Memory no longer uses a flat-count badge in the summary bar.
-  # Still compute a rough total for backwards callers that might reference it.
-  local c=0
-  if [[ -d "$CLAUDE_DIR/projects" ]]; then
-    local pc=$(find "$CLAUDE_DIR/projects" -mindepth 2 -maxdepth 2 -name memory -type d 2>/dev/null | wc -l | tr -d ' ')
-    c=$((c + pc))
-  fi
-  [[ -f "$CLAUDE_DIR/CLAUDE.md" ]] && c=$((c + 1))
-  if [[ -d "$CLAUDE_DIR/agent-memory" ]]; then
-    local ac=$(find "$CLAUDE_DIR/agent-memory" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-    c=$((c + ac))
-  fi
-  echo "$c"
-}
-
 collect_plugins() {
   local dir="$CLAUDE_DIR/plugins/marketplaces"
   [[ -d "$dir" ]] || return
@@ -640,7 +625,6 @@ plugin_count=$(find "$CLAUDE_DIR/plugins/marketplaces" -mindepth 3 -maxdepth 3 -
 command_count=$(count_commands)
 mcp_count=$(count_json_key mcpServers)
 hook_count=$(count_hooks_total)
-memory_count=$(count_memory)
 
 # --- HTML ---
 cat > "$OUT" << 'HTMLHEAD'
