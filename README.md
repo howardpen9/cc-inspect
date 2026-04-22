@@ -68,6 +68,11 @@ A browser tab opens with your full Claude Code ecosystem dashboard.
 
 Claude Code writes auto-memory into per-project folders under `~/.claude/projects/<encoded>/memory/`. After a few months of everyday use, that tree easily grows to 20+ directories — including entries for projects you deleted, renamed, or only touched once. cc-inspect's Memory section is a cleanup recommender: it groups what's there by action needed and gives you copy-to-clipboard archive commands.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="screenshot-memory-dark.png">
+  <img src="screenshot-memory.png" alt="Memory Hygiene view — grouped cleanup recommendations">
+</picture>
+
 Instead of a file browser, you get grouped recommendations:
 
 | Group | What it contains | Action |
@@ -131,6 +136,11 @@ chmod +x ~/.claude/skills/cc-inspector/inspect.sh
 ### 記憶體衛生
 
 Claude Code 會把自動記憶體寫進 `~/.claude/projects/<encoded>/memory/` 下的各專案資料夾。用上幾個月之後，這個目錄樹很容易累積 20+ 個資料夾，裡面混雜了已刪除、改名、或只用過一次的專案。cc-inspect 的 Memory 區塊是一個清理建議引擎：把條目依「該做什麼動作」分組，並附上可直接複製貼到 terminal 的封存指令。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="screenshot-memory-dark.png">
+  <img src="screenshot-memory.png" alt="記憶體衛生檢視 — 分組的清理建議">
+</picture>
 
 不是檔案瀏覽器，是分組的清理建議：
 
