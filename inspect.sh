@@ -563,10 +563,47 @@ collect_plugins() {
     local mp_name=$(basename "$marketplace")
     local plugins_dir="$marketplace/plugins"
     [[ -d "$plugins_dir" ]] || continue
+    local mp_manifest="$marketplace/.claude-plugin/marketplace.json"
     for plugin in "$plugins_dir"/*/; do
       [[ -d "$plugin" ]] || continue
       local p_name=$(basename "$plugin")
-      echo "<tr data-scope=\"user\"><td><span class=\"scope-tag scope-user\">user</span></td><td>$mp_name</td><td>$p_name</td></tr>"
+      local manifest="$plugin/.claude-plugin/plugin.json"
+      local desc=""
+      if [[ -f "$manifest" ]]; then
+        desc=$(python3 -c "
+import json, html, sys
+try:
+    d = json.load(open('$manifest'))
+    s = (d.get('description') or '').strip()
+    if s:
+        print(html.escape(s))
+except Exception:
+    pass
+" 2>/dev/null)
+      fi
+      # Fallback: look up description in marketplace.json
+      if [[ -z "$desc" && -f "$mp_manifest" ]]; then
+        desc=$(python3 -c "
+import json, html
+try:
+    d = json.load(open('$mp_manifest'))
+    for p in d.get('plugins', []):
+        if p.get('name') == '$p_name':
+            s = (p.get('description') or '').strip()
+            if s:
+                print(html.escape(s))
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+      fi
+      local detail
+      if [[ -n "$desc" ]]; then
+        detail="$desc <span class=\"source-hint\">($mp_name)</span>"
+      else
+        detail="<span class=\"source-hint\">$mp_name</span>"
+      fi
+      echo "<tr data-scope=\"user\"><td><span class=\"scope-tag scope-user\">user</span></td><td>$p_name</td><td>$detail</td></tr>"
     done
   done
 }
@@ -691,6 +728,32 @@ cat > "$OUT" << 'HTMLHEAD'
   .scope-chip.disabled { opacity: 0.3; cursor: default; pointer-events: none; }
   .scope-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   .scope-chip .path { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; opacity: 0.7; }
+
+  /* --- Search box --- */
+  .search-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin: 12px 0 18px;
+  }
+  .search-bar input {
+    flex: 1; min-width: 0;
+    padding: 8px 14px;
+    background: var(--badge);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit; font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .search-bar input:focus { border-color: var(--accent); }
+  .search-bar input::placeholder { color: var(--text2); opacity: 0.7; }
+  .search-bar .search-hint {
+    font-size: 11px; color: var(--text2);
+    font-family: 'SF Mono', Menlo, monospace;
+    white-space: nowrap;
+  }
+  tr.search-hidden, section.search-hidden { display: none !important; }
+  mark.search-hit { background: var(--accent-bg); color: var(--accent); border-radius: 2px; padding: 0 2px; }
 
   /* --- Badges --- */
   .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; }
@@ -864,6 +927,13 @@ echo "<p class=\"meta\">Generated: $NOW</p>" >> "$OUT"
   echo '</div>'
 } >> "$OUT"
 
+cat >> "$OUT" << 'SEARCH'
+<div class="search-bar">
+  <input type="search" id="search-input" placeholder="Search by name or description… (press / to focus, Esc to clear)" autocomplete="off" spellcheck="false">
+  <span class="search-hint" id="search-count"></span>
+</div>
+SEARCH
+
 cat >> "$OUT" << BADGES
 <div class="badges">
   <span class="badge" data-badge="skills"><strong>$skill_count</strong> Skills</span>
@@ -1014,26 +1084,9 @@ document.addEventListener('click', function(e) {
   // Scope filter chips (global).
   var chip = e.target.closest('.scope-chip:not(.disabled)');
   if (chip) {
-    var scope = chip.dataset.scope;
     document.querySelectorAll('.scope-chip').forEach(function(c) { c.classList.remove('active'); });
     chip.classList.add('active');
-    // Filter rows in standard table sections (Skills / Plugins / MCP / Commands / Hooks)
-    document.querySelectorAll('table tr').forEach(function(tr) {
-      if (scope === 'all') { tr.style.display = ''; return; }
-      tr.style.display = (tr.dataset.scope === scope) ? '' : 'none';
-    });
-    // Update badge counts (memory has no flat badge anymore)
-    document.querySelectorAll('.badge[data-badge]').forEach(function(badge) {
-      var cat = badge.dataset.badge;
-      var section = document.querySelector('section[data-category="' + cat + '"]');
-      if (!section) return;
-      var count = 0;
-      section.querySelectorAll('table tr').forEach(function(tr) {
-        if (scope === 'all' || tr.dataset.scope === scope) count++;
-      });
-      var s = badge.querySelector('strong');
-      if (s) s.textContent = count;
-    });
+    applyFilters();
     return;
   }
   // Memory group expand/collapse
@@ -1087,6 +1140,158 @@ function flashCopied(btn) {
     btn.classList.remove('copied');
   }, 1500);
 }
+
+// --- Search + scope filter ---
+// Cache original HTML of each row's cells so we can re-apply highlights without losing markup.
+(function cacheOriginals() {
+  document.querySelectorAll('table tr').forEach(function(tr) {
+    Array.prototype.forEach.call(tr.cells, function(td) {
+      td.dataset.orig = td.innerHTML;
+    });
+  });
+  // Memory entries: cache descendant text nodes' parents for highlight too.
+  document.querySelectorAll('.mem-group').forEach(function(g) {
+    g.dataset.origOpen = g.classList.contains('open') ? '1' : '0';
+  });
+})();
+
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, function(c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+function highlight(html, query) {
+  if (!query) return html;
+  // Walk the HTML string, only inserting <mark> in text segments (outside tags).
+  var re = new RegExp(escapeRegex(query), 'gi');
+  var out = '', i = 0, inTag = false, textStart = 0;
+  for (i = 0; i < html.length; i++) {
+    var ch = html[i];
+    if (!inTag && ch === '<') {
+      out += html.slice(textStart, i).replace(re, function(m) { return '<mark class="search-hit">' + m + '</mark>'; });
+      inTag = true;
+      textStart = i;
+    } else if (inTag && ch === '>') {
+      out += html.slice(textStart, i + 1);
+      inTag = false;
+      textStart = i + 1;
+    }
+  }
+  if (!inTag) {
+    out += html.slice(textStart).replace(re, function(m) { return '<mark class="search-hit">' + m + '</mark>'; });
+  } else {
+    out += html.slice(textStart);
+  }
+  return out;
+}
+
+function getActiveScope() {
+  var active = document.querySelector('.scope-chip.active');
+  return active ? active.dataset.scope : 'all';
+}
+
+function applyFilters() {
+  var scope = getActiveScope();
+  var query = (document.getElementById('search-input').value || '').trim();
+  var qLower = query.toLowerCase();
+  var totalHits = 0;
+
+  // Tables: filter rows + highlight + auto-expand sections that have matches.
+  document.querySelectorAll('section[data-category]').forEach(function(section) {
+    var visibleCount = 0;
+    section.querySelectorAll('table tr').forEach(function(tr) {
+      var scopeOk = (scope === 'all') || (tr.dataset.scope === scope);
+      var text = tr.textContent.toLowerCase();
+      var textOk = !qLower || text.indexOf(qLower) !== -1;
+      var show = scopeOk && textOk;
+      tr.classList.toggle('search-hidden', !show);
+      if (show) {
+        visibleCount++;
+        // Re-render cells with highlight (or restore original).
+        Array.prototype.forEach.call(tr.cells, function(td) {
+          var orig = td.dataset.orig;
+          if (orig === undefined) return;
+          td.innerHTML = query ? highlight(orig, query) : orig;
+        });
+      }
+    });
+    // Hide section entirely when query is non-empty AND no matches.
+    var hideSection = query && visibleCount === 0 && section.querySelector('table');
+    section.classList.toggle('search-hidden', !!hideSection);
+    // Auto-expand on active search; restore on clear.
+    if (query && visibleCount > 0) {
+      var header = section.querySelector('.section-header');
+      var body = section.querySelector('.section-body');
+      if (header && body) {
+        header.classList.add('open');
+        body.classList.add('open');
+      }
+    }
+    totalHits += visibleCount;
+  });
+
+  // Memory section: filter mem-entry items (if present) by text only (scope chips don't apply to memory tree).
+  document.querySelectorAll('.mem-group').forEach(function(g) {
+    var entries = g.querySelectorAll('.mem-entry, .mem-row, li, tr');
+    var visible = 0;
+    if (query && entries.length) {
+      entries.forEach(function(el) {
+        var match = el.textContent.toLowerCase().indexOf(qLower) !== -1;
+        el.classList.toggle('search-hidden', !match);
+        if (match) visible++;
+      });
+      g.classList.toggle('search-hidden', visible === 0);
+      if (visible > 0) g.classList.add('open');
+    } else {
+      entries.forEach(function(el) { el.classList.remove('search-hidden'); });
+      g.classList.remove('search-hidden');
+      // Restore original open/closed state when clearing.
+      if (g.dataset.origOpen === '1') g.classList.add('open');
+      else g.classList.remove('open');
+    }
+  });
+
+  // Update badge counts to reflect what's visible.
+  document.querySelectorAll('.badge[data-badge]').forEach(function(badge) {
+    var cat = badge.dataset.badge;
+    var section = document.querySelector('section[data-category="' + cat + '"]');
+    if (!section) return;
+    var count = section.querySelectorAll('table tr:not(.search-hidden)').length;
+    var s = badge.querySelector('strong');
+    if (s) s.textContent = count;
+  });
+
+  // Status hint.
+  var hint = document.getElementById('search-count');
+  if (hint) hint.textContent = query ? (totalHits + ' match' + (totalHits === 1 ? '' : 'es')) : '';
+}
+
+(function initSearch() {
+  var input = document.getElementById('search-input');
+  if (!input) return;
+  var debounceTimer = null;
+  input.addEventListener('input', function() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(applyFilters, 80);
+  });
+  document.addEventListener('keydown', function(e) {
+    // '/' focuses the search box (unless typing in another input).
+    if (e.key === '/' && document.activeElement !== input &&
+        !(document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName))) {
+      e.preventDefault();
+      input.focus();
+      input.select();
+      return;
+    }
+    if (e.key === 'Escape' && document.activeElement === input) {
+      input.value = '';
+      applyFilters();
+      input.blur();
+    }
+  });
+})();
 </script>
 </body>
 </html>
