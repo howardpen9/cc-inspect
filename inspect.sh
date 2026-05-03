@@ -563,10 +563,47 @@ collect_plugins() {
     local mp_name=$(basename "$marketplace")
     local plugins_dir="$marketplace/plugins"
     [[ -d "$plugins_dir" ]] || continue
+    local mp_manifest="$marketplace/.claude-plugin/marketplace.json"
     for plugin in "$plugins_dir"/*/; do
       [[ -d "$plugin" ]] || continue
       local p_name=$(basename "$plugin")
-      echo "<tr data-scope=\"user\"><td><span class=\"scope-tag scope-user\">user</span></td><td>$mp_name</td><td>$p_name</td></tr>"
+      local manifest="$plugin/.claude-plugin/plugin.json"
+      local desc=""
+      if [[ -f "$manifest" ]]; then
+        desc=$(python3 -c "
+import json, html, sys
+try:
+    d = json.load(open('$manifest'))
+    s = (d.get('description') or '').strip()
+    if s:
+        print(html.escape(s))
+except Exception:
+    pass
+" 2>/dev/null)
+      fi
+      # Fallback: look up description in marketplace.json
+      if [[ -z "$desc" && -f "$mp_manifest" ]]; then
+        desc=$(python3 -c "
+import json, html
+try:
+    d = json.load(open('$mp_manifest'))
+    for p in d.get('plugins', []):
+        if p.get('name') == '$p_name':
+            s = (p.get('description') or '').strip()
+            if s:
+                print(html.escape(s))
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+      fi
+      local detail
+      if [[ -n "$desc" ]]; then
+        detail="$desc <span class=\"source-hint\">($mp_name)</span>"
+      else
+        detail="<span class=\"source-hint\">$mp_name</span>"
+      fi
+      echo "<tr data-scope=\"user\"><td><span class=\"scope-tag scope-user\">user</span></td><td>$p_name</td><td>$detail</td></tr>"
     done
   done
 }
